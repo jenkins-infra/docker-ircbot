@@ -1,107 +1,169 @@
 package org.jenkinsci.backend.ircbot;
 
+import static java.util.Collections.emptyList;
+import static java.util.Collections.singletonList;
+import static java.util.regex.Pattern.CASE_INSENSITIVE;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import io.github.ma1uta.matrix.client.model.sync.SyncResponse;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+import javax.annotation.CheckForNull;
+
+import org.jenkinsci.backend.ircbot.fallback.BotsnackMessage;
+import org.jenkinsci.backend.ircbot.fallback.FallbackMessage;
+import org.kohsuke.github.GHOrganization;
+import org.kohsuke.github.GHOrganization.Permission;
+import org.kohsuke.github.GHRepository;
+import org.kohsuke.github.GHTeam;
+import org.kohsuke.github.GHTeamBuilder;
+import org.kohsuke.github.GHUser;
+import org.kohsuke.github.GitHub;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.atlassian.jira.rest.client.api.ComponentRestClient;
 import com.atlassian.jira.rest.client.api.JiraRestClient;
 import com.atlassian.jira.rest.client.api.domain.AssigneeType;
 import com.atlassian.jira.rest.client.api.domain.Component;
 import com.atlassian.jira.rest.client.api.domain.input.ComponentInput;
+import com.google.common.collect.ImmutableSortedSet;
+
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
-import java.io.FileOutputStream;
-import java.io.OutputStreamWriter;
-import java.io.Writer;
-import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeoutException;
-import java.util.function.Consumer;
-import java.util.stream.Collectors;
-
 import io.atlassian.util.concurrent.Promise;
-import org.jenkinsci.backend.ircbot.fallback.BotsnackMessage;
-import org.jenkinsci.backend.ircbot.fallback.FallbackMessage;
-import org.kohsuke.github.GHOrganization.Permission;
-import org.kohsuke.github.GHTeamBuilder;
-import org.pircbotx.cap.SASLCapHandler;
-import org.pircbotx.hooks.ListenerAdapter;
-import org.pircbotx.hooks.events.MessageEvent;
-import org.kohsuke.github.GHOrganization;
-import org.kohsuke.github.GHRepository;
-import org.kohsuke.github.GHTeam;
-import org.kohsuke.github.GHUser;
-import org.kohsuke.github.GitHub;
-import org.pircbotx.Channel;
-import org.pircbotx.Configuration;
-import org.pircbotx.PircBotX;
-import org.pircbotx.User;
-import org.pircbotx.UserLevel;
-import org.pircbotx.output.OutputChannel;
-import org.pircbotx.output.OutputIRC;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
-import java.io.File;
-import java.io.IOException;
-import java.security.GeneralSecurityException;
-import java.security.cert.X509Certificate;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-
-import static java.util.Collections.emptyList;
-import static java.util.Collections.singletonList;
-import static java.util.regex.Pattern.*;
-
-import javax.annotation.CheckForNull;
+import io.github.ma1uta.matrix.client.StandaloneClient;
+import io.github.ma1uta.matrix.client.model.sync.AccountData;
+import io.github.ma1uta.matrix.client.model.sync.InvitedRoom;
+import io.github.ma1uta.matrix.client.model.sync.JoinedRoom;
+import io.github.ma1uta.matrix.client.model.sync.LeftRoom;
+import io.github.ma1uta.matrix.client.model.sync.Presence;
+import io.github.ma1uta.matrix.client.model.sync.Rooms;
+import io.github.ma1uta.matrix.client.model.sync.Timeline;
+import io.github.ma1uta.matrix.client.sync.SyncLoop;
+import io.github.ma1uta.matrix.client.sync.SyncParams;
+import io.github.ma1uta.matrix.event.Event;
+import io.github.ma1uta.matrix.event.RoomEvent;
+import io.github.ma1uta.matrix.event.StateEvent;
+import io.github.ma1uta.matrix.event.content.EventContent;
+import io.github.ma1uta.matrix.event.content.RoomMessageContent;
 
 /**
- * IRC Bot on irc.libera.chat as a means to delegate administrative work to committers.
- *
- * @author Kohsuke Kawaguchi
+
+* IRC Bot on irc.libera.chat as a means to delegate administrative work to committers.
+*
+* @author Kohsuke Kawaguchi
  */
-public class IrcListener extends ListenerAdapter {
+public class IrcListener {
+
+    public static class Channel {
+        StandaloneClient mxClient;
+        String roomId;
+
+        Channel(StandaloneClient mxClient, String roomId) {
+            this.mxClient = mxClient;
+            this.roomId = roomId;
+        }
+
+        OutputChannel send() {
+            return new OutputChannel(this.mxClient, this.roomId);
+        }
+
+    }
+
+    public static enum UserLevel {
+        VOICE,
+        OP
+    }
+
+    public static class User {
+        String userId;
+
+        User(String userId) {
+            this.userId = userId;
+        }
+
+        String getUserId() {
+            return this.userId;
+        }
+
+        ImmutableSortedSet<UserLevel> getUserLevels(Channel channel) {
+            return ImmutableSortedSet.of(UserLevel.OP);
+        }
+    }
+
+
+    public static class OutputChannel {
+        String roomId;
+        StandaloneClient mxClient;
+
+        OutputChannel(StandaloneClient mxClient, String roomId) {
+            this.mxClient = mxClient;
+            this.roomId = roomId;
+        }
+
+        void message(String msg) {
+            System.out.println("roomId: " + roomId + ", msg: " + msg);
+            mxClient.event().sendMessage(roomId, msg);
+        }
+    }
+
+    public static class MessageEvent {
+        String message = "";
+        String roomId = "";
+        String senderId = "";
+
+        StandaloneClient mxClient;
+
+        public MessageEvent(StandaloneClient mxClient, String roomId, String message, String senderId) {
+            this.roomId = roomId;
+            this.message = message;
+            this.mxClient = mxClient;
+            this.senderId = senderId;
+        }
+
+        Channel getChannel() {
+            return new Channel(this.mxClient, this.roomId);
+        }
+
+        User getUser() {
+            return new User(this.senderId);
+        }
+
+        String getMessage() {
+            return this.message;
+        }
+    }
 
     private static final Logger LOGGER = LoggerFactory.getLogger(IrcListener.class);
 
-    /**
-     * Records commands that we didn't understand.
-     */
-    private File unknownCommands;
+    private final StandaloneClient mxClient;
+    private final String botUserId;
 
-    /**
-     * Map from the issue number to the time it was last mentioned.
-     * Used so that we don't repeatedly mention the same issues.
-     */
-    @SuppressWarnings("unchecked")
-    private final Map<String,Long> recentIssues = Collections.<String,Long>synchronizedMap(new HashMap<String,Long>(10));
-
-    public IrcListener(File unknownCommands) {
-        this.unknownCommands = unknownCommands;
+    public IrcListener(StandaloneClient mxClient, String botUserId) {
+        this.mxClient = mxClient;
+        this.botUserId = botUserId;
     }
 
-    @Override
     public void onMessage(MessageEvent e) {
-        Channel channel = e.getChannel();
-        User sender = e.getUser();
-        String message = e.getMessage();
+        final Channel channel = e.getChannel();
+        final User sender = e.getUser();
+        final String message = e.getMessage();
+        final String directMessagePrefix = "jenkins-admin:";
 
-        String senderNick = sender.getNick();
-
-        if (!IrcBotConfig.getChannels().contains(channel.getName()))     return; // not in this channel
-        if (senderNick.equals("jenkinsci_builds") || senderNick.equals("jenkins-admin") || senderNick.startsWith("ircbot-"))
-            return; // ignore messages from other bots
-        final String directMessagePrefix = e.getBot().getNick() + ":";
-
-        message = message.trim();
         try {
             if (message.startsWith(directMessagePrefix)) { // Direct command to the bot
                 // remove prefixes, trim whitespaces
@@ -131,7 +193,7 @@ public class IrcListener extends ListenerAdapter {
             return;
         }
 
-        m = Pattern.compile("fork (?:https://github\\.com/)?(\\S+)/(\\S+)(?: on github)?(?: as (\\S+))?(?: with (jira|github issues))?",CASE_INSENSITIVE).matcher(payload);
+        m = Pattern.compile("fork (?:<https://github\\.com/)?(\\S+)/(\\S+)(>?: on github)?(?: as (\\S+))?(?: with (jira|github issues))?",CASE_INSENSITIVE).matcher(payload);
         if (m.matches()) {
             forkGitHub(channel,sender,m.group(1),m.group(2),m.group(3), emptyList(), m.group(4).toLowerCase().contains("github"));
             return;
@@ -215,30 +277,6 @@ public class IrcListener extends ListenerAdapter {
             return;
         }
 
-        m = Pattern.compile("(?:make|give|grant|add) (\\S+) voice(?: on irc)?",CASE_INSENSITIVE).matcher(payload);
-        if (m.matches()) {
-            grantAutoVoice(channel,sender,m.group(1));
-            return;
-        }
-
-        m = Pattern.compile("(?:rem|remove|ungrant|del|delete) (\\S+) voice(?: on irc)?",CASE_INSENSITIVE).matcher(payload);
-        if (m.matches()) {
-            removeAutoVoice(channel,sender,m.group(1));
-            return;
-        }
-
-        m = Pattern.compile("(?:kick) (\\S+)",CASE_INSENSITIVE).matcher(payload);
-        if (m.matches()) {
-            kickUser(channel,sender,m.group(1));
-            return;
-        }
-
-        m = Pattern.compile("(?:set) (?:topic) (.*)", CASE_INSENSITIVE).matcher(payload);
-        if (m.matches()) {
-            setTopic(channel,sender,m.group(1));
-            return;
-        }
-
         if (payload.equalsIgnoreCase("version")) {
             version(channel);
             return;
@@ -251,7 +289,7 @@ public class IrcListener extends ListenerAdapter {
 
         if (payload.equalsIgnoreCase("refresh")) {
             // get the updated list
-            channel.getBot().sendRaw().rawLineNow("NAMES " + channel);
+            // FIXME - channel.getBot().sendRaw().rawLineNow("NAMES " + channel);
             return;
         }
 
@@ -265,24 +303,14 @@ public class IrcListener extends ListenerAdapter {
         }
 
         sendFallbackMessage(channel, payload, sender);
-
-        try {
-            Writer w = new OutputStreamWriter(new FileOutputStream(unknownCommands), StandardCharsets.UTF_8);
-            w.append(payload);
-            w.close();
-        } catch (IOException e) {// if we fail to write, let it be.
-            e.printStackTrace();
-        }
     }
 
     private void sendBotsnackMessage(Channel channel, User sender) {
-        OutputChannel out = channel.send();
-        out.message((new BotsnackMessage().answer()));
+        channel.send().message((new BotsnackMessage().answer()));
     }
 
     private void sendFallbackMessage(Channel channel, String payload, User sender) {
-        OutputChannel out = channel.send();
-        out.message(new FallbackMessage(payload, sender.getNick()).answer());
+        channel.send().message(new FallbackMessage(payload, sender.getUserId()).answer());
     }
 
     /**
@@ -306,48 +334,6 @@ public class IrcListener extends ListenerAdapter {
         System.exit(0);
     }
 
-    private void kickUser(Channel channel, User sender, String target) {
-        if (!isSenderAuthorized(channel, sender)) {
-            insufficientPermissionError(channel);
-            return;
-        }
-
-        OutputChannel out = channel.send();
-        for (User u : channel.getUsers()) {
-            if (u.getNick().equalsIgnoreCase(target)) {
-                out.kick(u, "kicked");
-                out.message("Kicked user " + target);
-                break;
-            }
-        }
-    }
-
-    private void setTopic(Channel channel, User sender, String newTopic) {
-        if(!isSenderAuthorized(channel, sender)) {
-            insufficientPermissionError(channel);
-            return;
-        }
-        channel.send().setTopic(newTopic);
-    }
-
-    private void replyBugStatus(Channel channel, String ticket) {
-        Long time = recentIssues.get(ticket);
-
-        recentIssues.put(ticket,System.currentTimeMillis());
-
-        if (time!=null) {
-            if (System.currentTimeMillis()-time < 60*1000) {
-                return; // already mentioned recently. don't repeat
-            }
-        }
-
-        try {
-            channel.send().message(JiraHelper.getSummary(ticket));
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
     /**
      * Is the sender respected in the channel?
      *
@@ -358,13 +344,13 @@ public class IrcListener extends ListenerAdapter {
     }
 
     private boolean isSenderAuthorized(Channel channel, User sender, boolean acceptVoice) {
-        return (IrcBotConfig.TEST_SUPERUSER != null && IrcBotConfig.TEST_SUPERUSER.equals(sender.getNick()))
+        return (IrcBotConfig.TEST_SUPERUSER != null && IrcBotConfig.TEST_SUPERUSER.equals(sender.getUserId()))
                 || sender.getUserLevels(channel).stream().anyMatch(e -> e == UserLevel.OP
                 || (acceptVoice && e == UserLevel.VOICE));
     }
 
     private void help(Channel channel) {
-        channel.send().message("See https://jenkins.io/projects/infrastructure/ircbot/");
+        channel.send().message("See <https://jenkins.io/projects/infrastructure/ircbot/>");
     }
 
     private void version(Channel channel) {
@@ -388,12 +374,12 @@ public class IrcListener extends ListenerAdapter {
         final String requiredPrefix = acceptVoice ? "+ or @" : "@";
         out.message("Only people with "+requiredPrefix+" can run this command.");
         // I noticed that sometimes the bot just get out of sync, so ask the sender to retry
-        channel.getBot().sendRaw().rawLineNow("NAMES "+channel);
+        // FIXME - channel.getBot().sendRaw().rawLineNow("NAMES "+channel);
         out.message("I'll refresh the member list, so if you think this is an error, try again in a few seconds.");
     }
 
     /**
-     * Creates an issue tracker component.
+  * Creates an issue tracker component.
      */
     private boolean createComponent(Channel channel, User sender, String subcomponent, String owner) {
         if (!isSenderAuthorized(channel,sender)) {
@@ -429,7 +415,7 @@ public class IrcListener extends ListenerAdapter {
     }
 
     /**
-     * Renames an issue tracker component.
+  * Renames an issue tracker component.
      */
     private void renameComponent(Channel channel, User sender, String oldName, String newName) {
         if (!isSenderAuthorized(channel,sender)) {
@@ -460,7 +446,7 @@ public class IrcListener extends ListenerAdapter {
     }
 
     /**
-     * Deletes an issue tracker component.
+  * Deletes an issue tracker component.
      */
     private void deleteComponent(Channel channel, User sender, String deletedComponent, String backupComponent) {
         if (!isSenderAuthorized(channel,sender)) {
@@ -491,15 +477,15 @@ public class IrcListener extends ListenerAdapter {
     }
 
     /**
-     * Deletes an assignee from the specified component
+  * Deletes an assignee from the specified component
      */
     private void removeDefaultAssignee(Channel channel, User sender, List<String> subcomponents) {
         setDefaultAssignee(channel, sender, subcomponents, null);
     }
 
     /**
-     * Creates an issue tracker component.
-     * @param owner User ID or null if the owner should be removed
+  * Creates an issue tracker component.
+  * @param owner User ID or null if the owner should be removed
      */
     private void setDefaultAssignee(Channel channel, User sender, List<String> subcomponents,
                                     @CheckForNull String owner) {
@@ -537,8 +523,8 @@ public class IrcListener extends ListenerAdapter {
     }
 
     /**
-     * Sets the component description.
-     * @param description Component description. Use null to remove the description
+  * Sets the component description.
+  * @param description Component description. Use null to remove the description
      */
     private void setComponentDescription(Channel channel, User sender, String componentName, @CheckForNull String description) {
         if (!isSenderAuthorized(channel,sender)) {
@@ -568,30 +554,6 @@ public class IrcListener extends ListenerAdapter {
         }
     }
 
-    private void grantAutoVoice(Channel channel, User sender, String target) {
-        if (!isSenderAuthorized(channel,sender)) {
-          insufficientPermissionError(channel);
-          return;
-        }
-
-        OutputIRC out = channel.getBot().sendIRC();
-        out.message("CHANSERV", "flags " + channel.getName() + " " + target + " +V");
-        out.message("CHANSERV", "voice " + channel.getName() + " " + target);
-        channel.send().message("Voice privilege (+V) added for " + target);
-    }
-
-    private void removeAutoVoice(Channel channel, User sender, String target) {
-        if (!isSenderAuthorized(channel, sender)) {
-            insufficientPermissionError(channel);
-            return;
-        }
-
-        OutputIRC out = channel.getBot().sendIRC();
-        out.message("CHANSERV", "flags " + channel.getName() + " " + target + " -V");
-        out.message("CHANSERV", "devoice " + channel.getName() + " " + target);
-        channel.send().message("Voice privilege (-V) removed for " + target);
-    }
-
     private void createGitHubRepository(Channel channel, User sender, String name, String collaborator, boolean useGHIssues) {
         OutputChannel out = channel.send();
         try {
@@ -615,10 +577,10 @@ public class IrcListener extends ListenerAdapter {
     }
 
     /**
-     * Makes GitHub team visible.
-     *
-     * @param teams
-     *      teams to make visible
+  * Makes GitHub team visible.
+  *
+  * @param teams
+  * teams to make visible
      */
     private void makeGitHubTeamVisible(Channel channel, User sender, List<String> teams) {
         if (!isSenderAuthorized(channel, sender)) {
@@ -652,10 +614,10 @@ public class IrcListener extends ListenerAdapter {
     }
 
     /**
-     * Makes a user a maintainer of a GitHub team
-     *
-     * @param teams
-     *      make user a maintainer of one oe more teams.
+  * Makes a user a maintainer of a GitHub team
+  *
+  * @param teams
+  * make user a maintainer of one oe more teams.
      */
     private void makeGitHubTeamMaintainer(Channel channel, User sender, String newTeamMaintainer, List<String> teams) {
         if (!isSenderAuthorized(channel, sender)) {
@@ -690,10 +652,10 @@ public class IrcListener extends ListenerAdapter {
     }
 
     /**
-     * Adds a new collaborator to existing repositories.
-     *
-     * @param repos
-     *      List of repositories to add the collaborator to.
+  * Adds a new collaborator to existing repositories.
+  *
+  * @param repos
+  * List of repositories to add the collaborator to.
      */
     private void addGitHubCommitter(Channel channel, User sender, String collaborator, List<String> repos) {
         if (!isSenderAuthorized(channel,sender)) {
@@ -797,8 +759,8 @@ public class IrcListener extends ListenerAdapter {
     }
 
     /**
-     * @param newName
-     *      If not null, rename a repository after a fork.
+  * @param newName
+  * If not null, rename a repository after a fork.
      */
     boolean forkGitHub(Channel channel, User sender, String owner, String repo, String newName, List<String> maintainers, boolean useGHIssues) {
         boolean result = false;
@@ -897,7 +859,7 @@ public class IrcListener extends ListenerAdapter {
     }
 
     /**
-     * Fix up the repository set up to our policy.
+  * Fix up the repository set up to our policy.
      */
     private static void setupRepository(GHRepository r, boolean useGHIssues) throws IOException {
         r.enableIssueTracker(useGHIssues);
@@ -905,7 +867,7 @@ public class IrcListener extends ListenerAdapter {
     }
 
     /**
-     * Creates a repository local team, and grants access to the repository.
+  * Creates a repository local team, and grants access to the repository.
      */
     private static GHTeam getOrCreateRepoLocalTeam(OutputChannel out, GitHub github, GHOrganization org, GHRepository r, List<String> githubUsers) throws IOException {
         String teamName = r.getName() + " Developers";
@@ -929,7 +891,7 @@ public class IrcListener extends ListenerAdapter {
             // github automatically adds the user to the team who created the team, we don't want that
             team.remove(github.getMyself());
         }
-        
+
         t.add(r, Permission.ADMIN); // make team an admin on the given repository, always do in case the config is wrong
         return t;
     }
@@ -962,26 +924,154 @@ public class IrcListener extends ListenerAdapter {
         return items;
     }
 
+    public static void printEvent(Event<?> event) {
+        System.out.println("Type: " + event.getType());
+
+        if (event instanceof RoomEvent) {
+            RoomEvent<?> roomEvent = (RoomEvent<?>) event;
+
+            System.out.println("Event ID: " + roomEvent.getEventId());
+            System.out.println("Room ID: " + roomEvent.getRoomId());
+            System.out.println("Sender: " + roomEvent.getSender());
+            System.out.println("Origin server TS: " + roomEvent.getOriginServerTs());
+
+            if (roomEvent instanceof StateEvent) {
+                StateEvent<?> stateEvent = (StateEvent<?>) roomEvent;
+
+                System.out.println("State key: " + stateEvent.getStateKey());
+            }
+        }
+
+        EventContent content = event.getContent();
+        if (content instanceof RoomMessageContent) {
+            RoomMessageContent roomMessageContent = (RoomMessageContent) content;
+
+            System.out.println("MSG type: " + roomMessageContent.getMsgtype());
+            System.out.println("Body: " + roomMessageContent.getBody());
+        }
+    }
+
+    private Boolean firstSync = true;
+    public void processIncomingEvents(SyncResponse syncResponse, SyncParams syncParams) {
+            Boolean wasFirstSync = this.firstSync;
+            this.firstSync = false;
+
+            // Sender: @jenkins-hosting:matrix.org
+            System.out.println("Next batch: " + syncParams.getNextBatch());
+            if (syncParams.isFullState()) {
+                syncParams.setFullState(false);
+            }
+
+            this.firstSync = false;
+
+            // inbound listener to parse incoming events.
+            AccountData accountData = syncResponse.getAccountData();
+            if (accountData != null) {
+                System.out.println("=== Account data ===");
+                accountData.getEvents().forEach(IrcListener::printEvent);
+            }
+            Presence presence = syncResponse.getPresence();
+            if (presence != null) {
+                presence.getEvents().forEach(IrcListener::printEvent);
+            }
+            Rooms rooms = syncResponse.getRooms();
+            if (rooms != null) {
+                //Map<String, InvitedRoom> invite = rooms.getInvite();
+                //if (invite != null) {
+                //    System.out.println("=== Invites ===");
+                //    for (Map.Entry<String, InvitedRoom> inviteEntry : invite.entrySet()) {
+                //        System.out.println("Invite into the room: " + inviteEntry.getKey());
+                //        InvitedRoom invitedRoom = inviteEntry.getValue();
+                //        if (invitedRoom != null && invitedRoom.getInviteState() != null) {
+                //            List<Event> inviteEvents = invitedRoom.getInviteState().getEvents();
+                //            if (inviteEvents != null) {
+                //                inviteEvents.forEach(IrcListener::printEvent);
+                //            }
+                //        }
+                //    }
+                //}
+
+                //Map<String, LeftRoom> leave = rooms.getLeave();
+                //if (leave != null) {
+                //    System.out.println("=== Left rooms ===");
+                //    for (Map.Entry<String, LeftRoom> leftEntry : leave.entrySet()) {
+                //        System.out.println("Left from the room: " + leftEntry.getKey());
+                //    }
+                //}
+
+                Map<String, JoinedRoom> join = rooms.getJoin();
+                if (join != null) {
+                    //System.out.println("=== Joined rooms ===");
+                    for (Map.Entry<String, JoinedRoom> joinEntry : join.entrySet()) {
+                        JoinedRoom joinedRoom = joinEntry.getValue();
+
+                        if (joinedRoom.getState() != null) {
+                            System.out.println("= State =");
+                            if (joinedRoom.getState().getEvents() != null) {
+                                joinedRoom.getState().getEvents().forEach(IrcListener::printEvent);
+                            }
+                        }
+
+                        Timeline timeline = joinedRoom.getTimeline();
+                        if (timeline != null && timeline.getEvents() != null) {
+                            System.out.println("= Timeline =");
+                            // FIXME - here
+                            // timeline.getEvents().forEach(IrcListener::printEvent);
+                            for (Event<?> event : timeline.getEvents()) {
+                                if (event.getType() == "m.room.message") {
+                                    String senderId = ((RoomEvent<?>) event).getSender();
+                                    // skip own messages
+                                    if (senderId.equals(botUserId)) {
+                                        continue;
+                                    }
+                                    // ((RoomEvent<?>) event).getEventId()
+
+                                    EventContent content = event.getContent();
+                                    if (content instanceof RoomMessageContent) {
+                                        RoomMessageContent roomMessageContent = (RoomMessageContent) content;
+                                        if (!wasFirstSync && roomMessageContent.getMsgtype() == "m.text") {
+                                            MessageEvent me = new MessageEvent(
+                                                    mxClient,
+                                                    joinEntry.getKey(),
+                                                    roomMessageContent.getBody().trim(),
+                                                    senderId
+                                            );
+                                            this.onMessage(me);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // syncParams.setTerminate(true); // to stop SyncLoop.
+    }
+
     public static void main(String[] args) throws Exception {
-        Configuration.Builder builder = new Configuration.Builder()
-                .setName(IrcBotConfig.NAME)
-                .addServer(IrcBotConfig.SERVER, 6667)
-                .setAutoReconnect(true)
-                .addListener(new IrcListener(new File("unknown-commands.txt")));
-
-        for(String channel : IrcBotConfig.getChannels()) {
-            builder.addAutoJoinChannel(channel);
-        }
-
-        if(args.length>0) {
-            builder.setCapEnabled(true)
-                   .addCapHandler(new SASLCapHandler(IrcBotConfig.NAME, args[0]));
-        }
-
         LOGGER.info("Connecting to {} as {}.", IrcBotConfig.SERVER, IrcBotConfig.NAME);
         LOGGER.info("GitHub organization: {}", IrcBotConfig.GITHUB_ORGANIZATION);
 
-        PircBotX bot = new PircBotX(builder.buildConfiguration());
-        bot.startBot();
+        StandaloneClient mxClient = new StandaloneClient.Builder().domain(System.getenv("MATRIX_SERVER")).build();
+        // login
+        String botUserId = mxClient.auth().login(System.getenv("MATRIX_LOGIN"), System.getenv("MATRIX_PASSWORD").toCharArray()).getUserId();
+
+        // set display name via profile api
+        mxClient.profile().setDisplayName("Jenkins-Hosting");
+
+        IrcListener il = new IrcListener(mxClient, botUserId);
+        SyncLoop syncLoop = new SyncLoop(mxClient.sync(), il::processIncomingEvents);
+
+        // Set initial parameters (Optional).
+        SyncParams params = SyncParams.builder()
+            .fullState(false)
+            .timeout(10 * 1000L).build();
+
+        syncLoop.setInit(params);
+
+        // run the syncLoop
+        ExecutorService service = Executors.newFixedThreadPool(1);
+        service.execute(syncLoop);
     }
 }
+

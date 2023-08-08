@@ -62,6 +62,28 @@
     </plugins>
   </build>
 
+  <dependencyManagement>
+    <!--<dependencies>-->
+    <!--    <dependency>-->
+    <!--        <groupId>org.jboss.resteasy.microprofile</groupId>-->
+    <!--        <artifactId>resteasy-microprofile-bom</artifactId>-->
+    <!--        <version>2.1.1.Final</version>-->
+    <!--        <type>pom</type>-->
+    <!--        <scope>import</scope>-->
+    <!--    </dependency>-->
+    <!--</dependencies>-->
+
+    <dependencies>
+      <dependency>
+        <groupId>io.github.ma1uta.matrix</groupId>
+        <artifactId>jmsdk-bom</artifactId>
+        <version>0.13.1</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
   <dependencies>
     <dependency>
       <groupId>com.atlassian.jira</groupId>
@@ -100,10 +122,24 @@
       <artifactId>slf4j-simple</artifactId>
       <version>2.0.7</version>
     </dependency>
+    <!-- https://mvnrepository.com/artifact/io.github.ma1uta.matrix/jmsdk -->
     <dependency>
-      <groupId>com.github.pircbotx</groupId>
-      <artifactId>pircbotx</artifactId>
-      <version>2.3.1</version>
+      <groupId>io.github.ma1uta.matrix</groupId>
+      <artifactId>client-impl</artifactId>
+      <version>0.13.1</version>
+    </dependency>
+    <dependency>
+      <groupId>io.github.ma1uta.matrix</groupId>
+      <artifactId>common-impl</artifactId>
+      <version>0.13.1</version>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.microprofile.rest.client</groupId>
+      <artifactId>microprofile-rest-client-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.jboss.resteasy</groupId>
+      <artifactId>resteasy-client-microprofile</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.commons</groupId>

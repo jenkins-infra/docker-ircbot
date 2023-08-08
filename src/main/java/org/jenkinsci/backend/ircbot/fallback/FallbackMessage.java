@@ -1,7 +1,6 @@
 package org.jenkinsci.backend.ircbot.fallback;
 
 import org.apache.commons.lang3.StringUtils;
-import org.pircbotx.User;
 
 /**
  * This class is mostly to separate the core code from the joke-based one. This is VAI: very artificial intelligence.

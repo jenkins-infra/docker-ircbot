@@ -1,7 +1,6 @@
 package org.jenkinsci.backend.ircbot.fallback;
 
 import org.apache.commons.lang3.StringUtils;
-import org.pircbotx.User;
 
 public class BotsnackMessage {
 
